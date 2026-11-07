@@ -209,6 +209,39 @@ dotnet build -c Release
 
 ---
 
+## 现成的 rootfs 镜像（不用自己构建）
+
+如果你不想按 [docs/05-rootfs.md](docs/05-rootfs.md) 从头裁 rootfs，可以直接下载我们实际刷进板子的那份镜像：
+
+**[Releases → v1.0-rootfs](https://github.com/qiushanlin4/oea-nas/releases/tag/v1.0-rootfs)**
+
+| 文件 | 大小 | 说明 |
+|---|---|---|
+| `oea-nas-rootfs.img.xz` | 187 MB | 1 GiB ext4 rootfs 的 xz 压缩包 |
+| `oea-nas-rootfs.img.xz.sha256` | 88 B | 压缩包校验 |
+| `final4.sha256` | 77 B | 解压后原始镜像的校验 |
+
+```bash
+# 解压（得到 1073741824 字节的 final4.img）
+xz -dk oea-nas-rootfs.img.xz
+sha256sum -c final4.sha256
+
+# 在 buildroot 救援 shell 里（PC 起 HTTP 服务，见 docs/06-flashing.md）
+wget -O - http://<你的PC>:8899/final4.img | dd of=/dev/system bs=1M conv=fsync
+```
+
+> ⚠️ **安全提示（务必先做）**：镜像里是 Armbian 默认配置。
+> 1. root 默认密码 `1234`，首次启动立刻 `passwd root` 改掉；
+> 2. SSH 主机密钥是 Armbian 镜像预置的通用密钥，执行
+>    `rm /etc/ssh/ssh_host_*_key*; ssh-keygen -A` 重新生成。
+>
+> 该镜像 FS UUID 为 `5fcbedc6-e842-4d14-b6b6-db38bee44d6d`，fstab 指向
+> `PARTUUID=614e0000-0000`（即 p7 `/dev/system`），已含 `ttyFIQ0` 串口 getty、
+> 无 `pam_lastlog`、netup.service 等修复。刷写与首次启动细节见
+> [docs/06-flashing.md](docs/06-flashing.md) 和 [docs/10-troubleshooting.md](docs/10-troubleshooting.md)。
+
+---
+
 ## 文档目录
 
 | 文档 | 内容 |
