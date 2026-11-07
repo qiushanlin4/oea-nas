@@ -1,4 +1,4 @@
-# 11 · 网页面板 nasmon（监控 + 写入 + 控制）
+# 11 · 网页面板 nasmon（监控 + 文件管理 + 控制）
 
 刷完机、装完 Samba 之后，我给这块板子加了一个**单文件**的网页控制台：
 浏览器打开 `http://<板子IP>:9090/` 就能看 CPU / 内存 / 温度 / 主频 / 网络速率 /
@@ -57,7 +57,7 @@
 | SMB | `smbstatus -b` 列出在线客户端 |
 | 进程 | `ps -eo pid,comm,pcpu,pmem --sort=-pcpu` top 7 |
 | 身份 | hostname / kernel / uptime / boot_time / **boot_id** |
-| 前端 | 登录遮罩（可选关闭）、3 秒自动刷新、CPU/内存/温度/网络 sparkline 曲线、写入表单、文件列表、告警日志 |
+| 前端 | 登录遮罩（可选关闭）、3 秒自动刷新、CPU/内存/温度/网络 sparkline 曲线、**文件管理器**、告警日志 |
 
 **控制动作（全部走白名单，见 `do_action()`）：**
 
@@ -76,7 +76,7 @@
 
 ## 11.3 API
 
-默认所有接口（除 `GET /`）都要带 `X-Auth-Token` 头；开启免密后全部放行（见 11.4）。
+默认所有接口（除 `GET /`）都要带 `X-Auth-Token` 头；开启免密后全部放行（见 11.5）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -85,9 +85,18 @@
 | `GET` | `/api/metrics` | `{"ok":true,"data":{...}}` —— **指标在 `data` 子对象里** |
 | `GET` | `/api/history` | 最近 180 个采样点，供曲线用 |
 | `GET` | `/api/logs` | `journalctl -p warning -n` 最近告警 |
-| `GET` | `/api/files` | 列出 `/srv/pool` 根目录文件 |
-| `POST` | `/api/write` | `{"name":"...","content":"..."}` 写文件到共享盘 |
+| `GET` | `/api/files` | 列出 `/srv/pool` 根目录文件（旧接口，保留兼容） |
+| `POST` | `/api/write` | `{"name":"...","content":"..."}` 写文件到共享盘根目录（旧接口） |
 | `POST` | `/api/action` | 上表的控制动作 |
+| `GET` | `/api/ls?path=<rel>&hidden=0` | **列目录**：返回 `entries[]`（`name/path/type/size/mtime/mode`）、`fs` 容量 |
+| `GET` | `/api/download?path=<rel>` | **下载**：流式返回文件，带 `Content-Disposition` |
+| `POST` | `/api/mkdir` | `{"path":"父目录","name":"新目录"}` 新建文件夹 |
+| `POST` | `/api/delete` | `{"path":"...","recursive":false}` 删除；非空目录需 `recursive=true` |
+| `POST` | `/api/rename` | `{"path":"...","name":"新名"}` 重命名 |
+| `POST` | `/api/read` | `{"path":"..."}` 读文本（≤512 KB，UTF-8） |
+| `POST` | `/api/save` | `{"path":"...","content":"..."}` 写文本（≤512 KB） |
+| `POST` | `/api/put?path=<dir>&name=<file>` | **流式上传**：body 是原始字节，最大 200 MB |
+| `POST` | `/api/upload` | `{"path","name","data":"<base64>"}` 旧的上传接口（受 1 MB 请求体限制，已不推荐） |
 
 ### 认证实现
 
@@ -105,7 +114,94 @@
 
 ---
 
-## 11.4 部署 + 免密模式（no_auth=1）
+## 11.4 文件管理（`filemgr.py`）
+
+面板最初只有一个「写文本文件到共享根目录」的表单，只能写 512 KB 的纯文本、不能建目录、
+不能删、不能传二进制。后来重做成一个独立的文件管理器后端 `filemgr.py`，`nasmon.py` 只负责路由。
+
+### 安全边界
+
+所有路径都过 `resolve()`：`os.path.realpath()` 之后再强制校验仍在 `/srv/pool` 之内，
+`..`、绝对路径、指向外部的软链接全部被拒（返回 `{"ok":false,"msg":"路径越界"}`）。
+文件名走 `_check_name()`：不允许 `/`、`\`、`NUL`，不允许 `.` 和 `..`。
+
+### 支持的操作
+
+| 操作 | 后端函数 | 说明 |
+|---|---|---|
+| 浏览 | `list_dir(rel, show_hidden)` | 目录在前、按名排序；返回每项的 `type`（dir/file/link）、大小、mtime、权限 |
+| 新建目录 | `mkdir(rel, name)` | 权限 0777，SMB 侧 `force user = nobody` 才写得进去 |
+| 删除 | `delete(rel, recursive)` | 文件直接删；空目录 `rmdir`；非空目录返回 `need_confirm`，前端二次确认后带 `recursive=true` |
+| 重命名 | `rename(rel, new_name)` | 同目录内改名，目标已存在则拒绝 |
+| 读文本 | `read_text(rel)` | ≤512 KB 且能按 UTF-8 解码，否则提示下载 |
+| 写文本 | `save_text(rel, content)` | 覆盖写，权限 0666 |
+| 上传 | `upload(rel, name, b64)` / 流式 `/api/put` | 上限 200 MB |
+| 下载 | `download(rel)` | 返回 `(路径, 大小)`，由 HTTP 层 256 KB 分块流式发送 |
+
+### 为什么上传要做成「流式」
+
+第一版上传是 `{"data": "<base64>"}` 走 JSON。问题有两个：
+
+1. `BaseHTTPRequestHandler` 的 `_body()` 原来硬限制 `Content-Length > 1 MB` 就直接返回 `{}`，
+   大文件根本进不来；
+2. 就算放开，base64 会让体积膨胀 33%，而且整个文件要在浏览器内存、HTTP 请求体、
+   Python 内存里各存一份 —— 板子只有 1 GB 内存。
+
+所以新增了 `POST /api/put?path=<dir>&name=<file>`：`Content-Type: application/octet-stream`，
+body 就是文件原始字节，服务端按 256 KB 分块读到磁盘，全程不拼大字符串。
+
+**踩过的坑**：`do_POST()` 开头无条件调用 `body = self._body()`，它会把整个请求体读进内存。
+`/api/put` 分支必须放在这行**之前**直接返回，否则 `_put_stream()` 再读时已经读到 EOF，
+表现为连接 ESTAB、目标文件 0 字节、curl 一直挂着。
+
+实测：50 MB 随机文件上传 **7.4 秒**（约 7 MB/s，接近百兆网口上限），md5 与源文件完全一致。
+
+### 前端交互
+
+- 面包屑：`根目录 / a / b`，每级可点
+- 每行操作：目录 → `打开 · 重命名 · 删除`；文件 → `下载 · 编辑(≤512KB) · 重命名 · 删除`
+- 上传：`<input type=file multiple>` + `XMLHttpRequest`，带 `upload.onprogress` 显示百分比
+- 编辑：弹层里一个 `<textarea>`，保存走 `/api/save`
+- 删除目录：`confirm()` 两次（第二次由后端 `need_confirm` 触发）
+
+### 实测记录
+
+```
+/api/ls         → 200，根目录 9 项，子目录 164 项
+/api/mkdir      → {"ok":true,"msg":"已创建目录"}
+/api/save       → {"ok":true,"size":18}
+/api/read       → {"ok":true,"content":"hello file manager"}
+/api/upload     → {"ok":true,"size":10}
+/api/rename     → {"ok":true,"msg":"已重命名"}
+/api/download   → 200，字节与源完全一致
+/api/delete     → 文件：已删除；非空目录：need_confirm；recursive：已删除目录及其内容
+路径越界        → ../../etc 与 ../../../etc/passwd 均返回 {"ok":false,"msg":"路径越界"}
+浏览器上传      → "✓ 全部上传完成 (1 个文件)"，列表刷新出现新文件
+浏览器删除      → "✓ 已删除文件"，列表行数回落
+```
+
+### 部署
+
+`filemgr.py` 要放在 `nasmon.py` 能 import 到的位置。主程序里写死了两条搜索路径：
+
+```python
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # /usr/local/bin
+sys.path.insert(0, "/usr/local/lib/nasmon")                      # 推荐放这里
+```
+
+```bash
+mkdir -p /usr/local/lib/nasmon
+install -m 0644 filemgr.py /usr/local/lib/nasmon/filemgr.py
+install -m 0755 nasmon.py  /usr/local/bin/nasmon.py
+python3 -m py_compile /usr/local/bin/nasmon.py
+systemctl restart nasmon
+```
+
+> **坑**：`import filemgr` 失败时不会崩，只会在 `stderr` 打一行 `filemgr import failed`，
+> 所有 `/api/ls` 等接口返回 `{"ok":false,"msg":"filemgr 未加载"}`。
+> 而且 `sys` 必须在文件顶部 `import`（第一版补丁漏了，服务直接 `NameError` 起不来）。
+
+## 11.5 部署 + 免密模式（no_auth=1）
 
 板子上确认环境（本机实测值）：Python **3.12.3** `/usr/bin/python3`，标准库齐全，
 9090 端口空闲，无 ufw，systemd 255。
@@ -177,7 +273,7 @@ no_auth=1
 
 ---
 
-## 11.5 验证（实测记录）
+## 11.6 验证（实测记录）
 
 板端：
 
@@ -228,7 +324,7 @@ echo "token_len=${#TOKEN}"   # 108
 
 ---
 
-## 11.6 二次开发注意
+## 11.7 二次开发注意
 
 - 前端是内嵌在 `HTML` 常量里的单页，改完直接 `systemctl restart nasmon` 生效。
 - 在 SMB 共享（NAS）上编辑已存在的 `nasmon.py` 时，`edit`/`write` 类工具会踩 ACL 报错

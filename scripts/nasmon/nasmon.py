@@ -8,6 +8,7 @@ nasmon.py - OEA NAS 网页监控 / 控制端
 认证: /etc/nasmon.conf 里的 user + pass_sha256；no_auth=1 时免密（仅限局域网）
 """
 import os
+import sys
 import re
 import json
 import time
@@ -17,11 +18,19 @@ import base64
 import socket
 import threading
 import subprocess
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CONF = "/etc/nasmon.conf"
 SECRET_FILE = "/etc/nasmon.secret"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, "/usr/local/lib/nasmon")
+try:
+    import filemgr
+except Exception as _e:  # pragma: no cover
+    filemgr = None
+    sys.stderr.write("filemgr import failed: %r\n" % (_e,))
+
 SHARE = "/srv/pool"
 PORT = int(os.environ.get("NASMON_PORT", "9090"))
 HISTORY_MAX = 180          # 180 * 2s = 6 分钟
@@ -604,16 +613,26 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
     </div>
 
     <div class="card">
-      <h2>📝 写入文件到 NAS 共享</h2>
-      <div class="note" style="margin:0 0 8px">写入 <b>/srv/pool</b>，即 <code>\\oeanas.local\nas</code> 可见的目录。</div>
-      <label>文件名</label><input id="w-name" value="web-note.txt" placeholder="例如 web-note.txt">
-      <label>内容</label><textarea id="w-content" placeholder="写点什么…"></textarea>
-      <div class="ctl">
-        <button class="btn" id="w-btn">写入文件</button>
-        <button class="btn" id="w-list">刷新文件列表</button>
+      <h2>📁 文件管理</h2>
+      <div class="note" style="margin:0 0 8px">
+        根目录 <b>/srv/pool</b>，即 <code>\\oeanas.local\nas</code>。
+        支持浏览子目录、上传、下载、新建文件夹、重命名、删除、编辑文本。
       </div>
-      <div class="msg" id="w-msg"></div>
-      <div id="w-files" style="margin-top:8px"></div>
+      <div id="fm-crumb" style="margin:0 0 8px;font-size:13px;word-break:break-all"></div>
+      <div class="ctl" style="margin:0 0 8px">
+        <button class="btn" id="fm-up">⬆ 上一级</button>
+        <button class="btn" id="fm-refresh">⟳ 刷新</button>
+        <button class="btn" id="fm-mkdir">＋ 新建文件夹</button>
+        <label class="btn" for="fm-file" style="cursor:pointer;display:inline-block">⬆ 上传文件</label>
+        <input type="file" id="fm-file" multiple style="display:none">
+      </div>
+      <div id="fm-msg" style="margin:0 0 8px;font-size:13px"></div>
+      <div style="max-height:520px;overflow:auto">
+        <table><thead><tr>
+          <th>名称</th><th class="num">大小</th><th>修改时间</th><th>操作</th>
+        </tr></thead><tbody id="fm-list"></tbody></table>
+      </div>
+      <div class="note" id="fm-stat" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
@@ -814,22 +833,149 @@ function refreshLogs(){
     el('c-log-n').textContent = (j.data||[]).length + ' 条';
   }).catch(function(){});
 }
-function refreshFiles(){
-  api('/api/files').then(function(j){
-    var f=j.data||[];
-    el('w-files').innerHTML = f.length? '<table><thead><tr><th>文件名</th><th class="num">大小</th><th>修改时间</th></tr></thead><tbody>'+
-      f.map(function(x){return '<tr><td>'+esc(x.name)+'</td><td class="num">'+fmtBytes(x.size)+'</td><td>'+esc(x.mtime)+'</td></tr>';}).join('')+
-      '</tbody></table>' : '<div class="note">共享根目录下还没有文件。</div>';
-  }).catch(function(){});
+var FM_PATH = '';
+function fmtBytes(n){
+  if(n===null||n===undefined) return '-';
+  var u=['B','KB','MB','GB','TB'], i=0, x=n;
+  while(x>=1024 && i<u.length-1){ x/=1024; i++; }
+  return (i===0? x : x.toFixed(x<10?2:1)) + ' ' + u[i];
 }
-function writeFile(){
-  var name=el('w-name').value, content=el('w-content').value;
-  el('w-msg').textContent='写入中…';
-  api('/api/write',{method:'POST',body:{name:name,content:content}}).then(function(j){
-    el('w-msg').innerHTML = j.ok? '<span class="ok">✓ '+esc(j.msg)+' → '+esc(j.path)+' ('+fmtBytes(j.size)+')</span>'
-                                : '<span class="bad">✗ '+esc(j.msg)+'</span>';
-    if(j.ok) refreshFiles();
-  }).catch(function(e){ el('w-msg').textContent='失败: '+e.message; });
+function fmCrumb(p){
+  var parts = p? p.split('/') : [];
+  var h = '<a href="#" data-p="">根目录</a>';
+  var acc = '';
+  for(var i=0;i<parts.length;i++){
+    acc = acc? acc+'/'+parts[i] : parts[i];
+    h += ' / <a href="#" data-p="'+esc(acc)+'">'+esc(parts[i])+'</a>';
+  }
+  el('fm-crumb').innerHTML = h;
+  var as = el('fm-crumb').querySelectorAll('a');
+  for(var k=0;k<as.length;k++){
+    as[k].onclick = function(ev){ ev.preventDefault();
+      fmLoad(this.getAttribute('data-p')||''); };
+  }
+}
+function fmLoad(p){
+  api('/api/ls?path='+encodeURIComponent(p||'')).then(function(j){
+    if(!j.ok){ el('fm-msg').innerHTML='<span class="bad">✗ '+esc(j.msg||'读取失败')+'</span>'; return; }
+    FM_PATH = j.path || '';
+    fmCrumb(FM_PATH);
+    var rows = (j.entries||[]).map(function(e){
+      var isDir = e.type==='dir';
+      var icon = isDir? '📁' : (e.type==='link'? '🔗' : '📄');
+      var nm = '<a href="#" data-dir="'+(isDir?1:0)+'" data-p="'+esc(e.path)+'">'+icon+' '+esc(e.name)+'</a>';
+      var ops = [];
+      if(isDir) ops.push('<a href="#" data-op="open" data-p="'+esc(e.path)+'">打开</a>');
+      else ops.push('<a href="/api/download?path='+encodeURIComponent(e.path)+'">下载</a>');
+      if(!isDir && e.size < 512*1024) ops.push('<a href="#" data-op="edit" data-p="'+esc(e.path)+'">编辑</a>');
+      ops.push('<a href="#" data-op="ren" data-p="'+esc(e.path)+'">重命名</a>');
+      ops.push('<a href="#" data-op="del" data-p="'+esc(e.path)+'" data-dir="'+(isDir?1:0)+'">删除</a>');
+      return '<tr><td>'+nm+'</td><td class="num">'+(isDir? '—' : fmtBytes(e.size))+
+             '</td><td>'+esc(e.mtime)+'</td><td style="font-size:12px">'+ops.join(' · ')+'</td></tr>';
+    }).join('');
+    el('fm-list').innerHTML = rows || '<tr><td colspan="4" class="note">空目录</td></tr>';
+    var fs = j.fs||{};
+    el('fm-stat').textContent = '共 '+(j.entries||[]).length+' 项'+
+      (fs.total? ' · 池容量 '+fmtBytes(fs.used)+' / '+fmtBytes(fs.total)+'（可用 '+fmtBytes(fs.free)+'）' : '');
+    // 绑定
+    var links = el('fm-list').querySelectorAll('a[data-p]');
+    for(var k=0;k<links.length;k++){
+      links[k].onclick = function(ev){
+        var op = this.getAttribute('data-op');
+        var p  = this.getAttribute('data-p');
+        var isDir = this.getAttribute('data-dir')==='1';
+        if(!op){ ev.preventDefault(); if(isDir) fmLoad(p); return; }
+        ev.preventDefault();
+        if(op==='open'){ fmLoad(p); }
+        else if(op==='del'){ fmDelete(p, isDir); }
+        else if(op==='ren'){ fmRename(p); }
+        else if(op==='edit'){ fmEdit(p); }
+      };
+    }
+  }).catch(function(e){ el('fm-msg').innerHTML='<span class="bad">✗ '+esc(e.message)+'</span>'; });
+}
+function fmMkdir(){
+  var n = prompt('新建文件夹名称：'); if(!n) return;
+  api('/api/mkdir',{method:'POST',body:{path:FM_PATH,name:n}}).then(function(j){
+    el('fm-msg').innerHTML = j.ok? '<span class="ok">✓ '+esc(j.msg)+'</span>' : '<span class="bad">✗ '+esc(j.msg)+'</span>';
+    if(j.ok) fmLoad(FM_PATH);
+  });
+}
+function fmDelete(p, isDir){
+  var msg = isDir? ('确定删除目录 "'+p+'" 及其全部内容？此操作不可恢复！') : ('确定删除文件 "'+p+'"？');
+  if(!confirm(msg)) return;
+  api('/api/delete',{method:'POST',body:{path:p,recursive:isDir}}).then(function(j){
+    if(!j.ok && j.need_confirm){
+      if(confirm('目录非空，确认递归删除全部内容？')) {
+        api('/api/delete',{method:'POST',body:{path:p,recursive:true}}).then(function(k){
+          el('fm-msg').innerHTML = k.ok? '<span class="ok">✓ '+esc(k.msg)+'</span>' : '<span class="bad">✗ '+esc(k.msg)+'</span>';
+          fmLoad(FM_PATH);
+        });
+      }
+      return;
+    }
+    el('fm-msg').innerHTML = j.ok? '<span class="ok">✓ '+esc(j.msg)+'</span>' : '<span class="bad">✗ '+esc(j.msg)+'</span>';
+    if(j.ok) fmLoad(FM_PATH);
+  });
+}
+function fmRename(p){
+  var cur = p.split('/').pop();
+  var n = prompt('新名称：', cur); if(!n || n===cur) return;
+  api('/api/rename',{method:'POST',body:{path:p,name:n}}).then(function(j){
+    el('fm-msg').innerHTML = j.ok? '<span class="ok">✓ '+esc(j.msg)+'</span>' : '<span class="bad">✗ '+esc(j.msg)+'</span>';
+    if(j.ok) fmLoad(FM_PATH);
+  });
+}
+function fmEdit(p){
+  api('/api/read',{method:'POST',body:{path:p}}).then(function(j){
+    if(!j.ok){ el('fm-msg').innerHTML='<span class="bad">✗ '+esc(j.msg)+'</span>'; return; }
+    var box = document.createElement('div');
+    box.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:999;display:flex;align-items:center;justify-content:center';
+    box.innerHTML='<div style="background:#1b1e24;border:1px solid #333a45;border-radius:10px;padding:16px;width:min(900px,92vw)">'+
+      '<div style="margin-bottom:8px;font-size:13px">编辑 <b>'+esc(p)+'</b></div>'+
+      '<textarea id="fm-ed" style="width:100%;height:min(60vh,520px);background:#0f1115;color:#e6e6e6;border:1px solid #333a45;border-radius:6px;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>'+
+      '<div style="margin-top:10px;text-align:right"><button class="btn" id="fm-cancel">取消</button> <button class="btn" id="fm-save">保存</button></div></div>';
+    document.body.appendChild(box);
+    var ta = box.querySelector('#fm-ed');
+    ta.value = j.content;
+    box.querySelector('#fm-cancel').onclick = function(){ box.remove(); };
+    box.querySelector('#fm-save').onclick = function(){
+      api('/api/save',{method:'POST',body:{path:p,content:ta.value}}).then(function(k){
+        box.remove();
+        el('fm-msg').innerHTML = k.ok? '<span class="ok">✓ '+esc(k.msg)+'</span>' : '<span class="bad">✗ '+esc(k.msg)+'</span>';
+        fmLoad(FM_PATH);
+      });
+    };
+  });
+}
+function fmUpload(files){
+  if(!files || !files.length) return;
+  var i = 0, total = files.length;
+  function next(){
+    if(i >= total){ el('fm-msg').innerHTML='<span class="ok">✓ 全部上传完成 ('+total+' 个文件)</span>'; fmLoad(FM_PATH); return; }
+    var f = files[i++];
+    el('fm-msg').textContent = '上传中 ('+i+'/'+total+')：'+f.name+' ('+fmtBytes(f.size)+')';
+    var url = '/api/put?path='+encodeURIComponent(FM_PATH)+'&name='+encodeURIComponent(f.name);
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', url, true);
+    xhr.setRequestHeader('Content-Type','application/octet-stream');
+    if(TOKEN) xhr.setRequestHeader('X-Auth-Token', TOKEN);
+    xhr.upload.onprogress = function(ev){
+      if(ev.lengthComputable){
+        var pct = Math.round(ev.loaded*100/ev.total);
+        el('fm-msg').textContent = '上传中 ('+i+'/'+total+')：'+f.name+' '+pct+'% ('+fmtBytes(ev.loaded)+'/'+fmtBytes(ev.total)+')';
+      }
+    };
+    xhr.onload = function(){
+      var j = {};
+      try { j = JSON.parse(xhr.responseText||'{}'); } catch(e){}
+      if(!j.ok){ el('fm-msg').innerHTML='<span class="bad">✗ '+esc(f.name)+': '+esc(j.msg||('HTTP '+xhr.status))+'</span>'; }
+      next();
+    };
+    xhr.onerror = function(){ el('fm-msg').innerHTML='<span class="bad">✗ '+esc(f.name)+': 网络错误</span>'; next(); };
+    xhr.send(f);
+  }
+  next();
 }
 function action(btn){
   var act=btn.getAttribute('data-act'), arg=btn.getAttribute('data-arg')||'';
@@ -845,8 +991,13 @@ function action(btn){
   .then(function(){ btn.disabled=false; btn.textContent=old; });
 }
 
+el('fm-up').onclick=function(){ if(!FM_PATH){ return; } var up = FM_PATH.split('/').slice(0,-1).join('/'); fmLoad(up); };
+el('fm-refresh').onclick=function(){ fmLoad(FM_PATH); };
+el('fm-mkdir').onclick=fmMkdir;
+el('fm-file').onchange=function(){ fmUpload(this.files); this.value=''; };
+
 function boot(){
-  refresh(); refreshLogs(); refreshFiles();
+  refresh(); refreshLogs(); fmLoad(FM_PATH);
   if(timer) clearInterval(timer);
   if(logTimer) clearInterval(logTimer);
   timer=setInterval(refresh,3000);
@@ -855,7 +1006,7 @@ function boot(){
 
 el('lbtn').onclick=doLogin;
 el('lp').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});
-el('btn-refresh').onclick=function(){refreshLogs();refreshFiles();refresh();};
+el('btn-refresh').onclick=function(){refreshLogs();fmLoad(FM_PATH);refresh();};
 el('btn-logout').onclick=function(){localStorage.removeItem('nasmon_token');TOKEN='';showLogin(true);if(timer)clearInterval(timer);if(logTimer)clearInterval(logTimer);};
 el('w-btn').onclick=writeFile;
 el('w-list').onclick=refreshFiles;
@@ -900,11 +1051,68 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self):
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            if n <= 0 or n > 1024 * 1024:
+            if n <= 0 or n > 256 * 1024 * 1024:
                 return {}
             return json.loads(self.rfile.read(n).decode("utf-8"))
         except Exception:
             return {}
+
+    def _put_stream(self):
+        """流式接收原始字节并落盘：POST /api/put?path=<dir>&name=<file>
+        Content-Type: application/octet-stream, body = 原始文件内容。
+        """
+        q = parse_qs(urlparse(self.path).query)
+        rel = q.get("path", [""])[0]
+        name = q.get("name", [""])[0]
+        if not filemgr:
+            self._send(500, {"ok": False, "msg": "filemgr 未加载"})
+            return
+        try:
+            parent = filemgr.resolve(rel)
+            name = filemgr._check_name(name)
+        except Exception as e:
+            self._send(400, {"ok": False, "msg": str(e)})
+            return
+        if not os.path.isdir(parent):
+            self._send(400, {"ok": False, "msg": "父目录不存在"})
+            return
+        try:
+            total = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            total = 0
+        if total <= 0:
+            self._send(400, {"ok": False, "msg": "缺少 Content-Length"})
+            return
+        if total > filemgr.MAX_UPLOAD:
+            self._send(413, {"ok": False,
+                             "msg": "超过 %d MB 上限" % (filemgr.MAX_UPLOAD // 1048576)})
+            return
+        target = os.path.join(parent, name)
+        got = 0
+        try:
+            with open(target, "wb") as f:
+                remain = total
+                while remain > 0:
+                    chunk = self.rfile.read(min(262144, remain))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    got += len(chunk)
+                    remain -= len(chunk)
+            os.chmod(target, 0o666)
+        except Exception as e:
+            self._send(500, {"ok": False, "msg": "写入失败: %s" % e})
+            return
+        if got != total:
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+            self._send(500, {"ok": False,
+                             "msg": "传输不完整 %d/%d" % (got, total)})
+            return
+        self._send(200, {"ok": True, "path": filemgr._relpath(target),
+                         "size": got, "msg": "上传成功"})
 
     def _auth(self):
         if NO_AUTH:
@@ -932,11 +1140,48 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "data": recent_logs(30)})
         elif p == "/api/files":
             self._send(200, {"ok": True, "data": list_files()})
+        elif p == "/api/ls":
+            q = parse_qs(urlparse(self.path).query)
+            rel = (q.get("path", [""])[0] or "")
+            show_hidden = q.get("hidden", ["0"])[0] == "1"
+            self._send(200, filemgr.list_dir(rel, show_hidden) if filemgr
+                       else {"ok": False, "msg": "filemgr 未加载"})
+        elif p == "/api/download":
+            q = parse_qs(urlparse(self.path).query)
+            rel = (q.get("path", [""])[0] or "")
+            try:
+                fp, size = filemgr.download(rel)
+            except Exception as e:
+                self._send(404, {"ok": False, "msg": str(e)})
+                return
+            fn = os.path.basename(fp)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition",
+                             "attachment; filename*=UTF-8''%s" % quote(fn))
+            self.end_headers()
+            try:
+                with open(fp, "rb") as f:
+                    while True:
+                        chunk = f.read(262144)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except Exception:
+                pass
         else:
             self._send(404, {"ok": False, "msg": "not found"})
 
     def do_POST(self):
         p = urlparse(self.path).path
+        # /api/put 走原始字节流，绝不能先调 _body()（它会把整个 body 读进内存）
+        if p == "/api/put":
+            if not self._auth():
+                self._send(401, {"ok": False, "msg": "unauthorized"})
+                return
+            self._put_stream()
+            return
         body = self._body()
         if p == "/api/login":
             if NO_AUTH:
@@ -958,6 +1203,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, do_action(body))
         elif p == "/api/write":
             self._send(200, do_write(body))
+        elif p == "/api/mkdir":
+            self._send(200, filemgr.mkdir(body.get("path", ""),
+                                          body.get("name", "")))
+        elif p == "/api/delete":
+            self._send(200, filemgr.delete(body.get("path", ""),
+                                           bool(body.get("recursive"))))
+        elif p == "/api/rename":
+            self._send(200, filemgr.rename(body.get("path", ""),
+                                           body.get("name", "")))
+        elif p == "/api/read":
+            self._send(200, filemgr.read_text(body.get("path", "")))
+        elif p == "/api/save":
+            self._send(200, filemgr.save_text(body.get("path", ""),
+                                              body.get("content", "")))
+        elif p == "/api/upload":
+            self._send(200, filemgr.upload(body.get("path", ""),
+                                           body.get("name", ""),
+                                           body.get("data", "")))
+
         else:
             self._send(404, {"ok": False, "msg": "not found"})
 
