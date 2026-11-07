@@ -1,0 +1,11 @@
+[Unit]
+Description=Lock CPU governor to performance (max registered OPP, no overclock)
+Documentation=https://github.com/qiushanlin4/oea-nas/blob/main/docs/11-performance.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cpu-performance.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

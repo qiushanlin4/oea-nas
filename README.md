@@ -32,6 +32,8 @@
 | 网络 | 有线百兆，DHCP + 静态双地址并存 |
 | 功耗 | 约 3 W（待机） |
 | 访问地址 | `\\oeanas.local\nas` / `\\192.168.101.33\nas` |
+| 网页面板 | `http://192.168.101.33:9090/`（单文件 Python 标准库，监控/写入/控制） |
+| CPU 策略 | 开机默认 `performance`，恒定 1104 MHz（已注册 OPP 内，非超频） |
 
 ---
 
@@ -257,6 +259,9 @@ wget -O - http://<你的PC>:8899/final4.img | dd of=/dev/system bs=1M conv=fsync
 | [08-samba.md](docs/08-samba.md) | smb.conf 全文、Windows 11 兼容、网络发现 |
 | [09-storage.md](docs/09-storage.md) | 分区回收、mergerfs 合并、ext4 预留回收 |
 | [10-troubleshooting.md](docs/10-troubleshooting.md) | 按症状组织的故障排查 |
+| [11-nasmon-panel.md](docs/11-nasmon-panel.md) | 网页面板 nasmon（监控/写入/控制，可免密） |
+| [12-overclocking.md](docs/12-overclocking.md) | 超频调查：CPU/DDR 能不能超，为什么最终不超 |
+| [13-performance-governor.md](docs/13-performance-governor.md) | 开机默认 performance（满频但非超频） |
 | [A-packages.md](docs/A-packages.md) | 完整的系统包清单与版本 |
 | [B-deadends.md](docs/B-deadends.md) | 13 条死路的详细记录 |
 
@@ -332,6 +337,9 @@ wget -O - http://<你的PC>:8899/final4.img | dd of=/dev/system bs=1M conv=fsync
 - **没有 RTC 电池**：断电后时间丢失，靠 `fake-hwclock` 恢复到最后关机时间，联网后 NTP 校正。
 - **overlay 根分区只有 488 MB 可写**：必须把 `/var/log`、`/var/cache/apt`、`/var/lib/apt/lists`
   外挂出去，否则会被写满。
+- **不能稳定超频**：live DTB 把 CPU 砍到最高 1104 MHz、DDR 只留 786 MHz，
+  运行时改 PLL/电压全部失败（详见 [12](docs/12-overclocking.md)）。真超频要改引导链，
+  可能失去唯一串口救援通道。开机默认 `performance` 已在允许的最高档，别再折腾。
 
 ---
 

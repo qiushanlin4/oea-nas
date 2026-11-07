@@ -40,3 +40,7 @@ desktop.ini
 
 # local GitHub PAT - never commit
 .gh-token
+
+# Python bytecode (board py_compile)
+__pycache__/
+*.pyc
