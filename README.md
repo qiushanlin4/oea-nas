@@ -255,15 +255,26 @@ dotnet build -c Release
 
 ```
 .
-├── docs/                    # 完整技术文档
+├── docs/                    # 完整技术文档（00–10 + A 包清单 + B 死路）
 ├── scripts/
 │   ├── windows/
 │   │   ├── serial/          # 串口工具（ser.ps1 / keys.ps1 / baudscan.ps1）
 │   │   └── fbc/             # 自写 fastboot 客户端（C# / .NET 8）
 │   ├── pc/                  # HTTP 服务器 + 代理（纯 PowerShell）
-│   └── board/               # 板端脚本（netup.sh / netup.service）
+│   └── board/               # 板端脚本（netup.sh / netup.service / install.sh）
 └── rootfs/                  # rootfs 构建脚本
+    ├── ddroot.sh            # 提取 rootfs 分区
+    ├── mk1g.sh              # 裁剪到 1 GiB
+    ├── mkfs1g.sh            # 建 ext4 + 记录符号链接
+    ├── walkall.sh           # dump 原始 uid/gid/mode
+    ├── mkmeta.sh            # 生成 sif 命令
+    ├── apply-fixes.sh       # 打补丁（PAM 等）
+    ├── setfstab.sh          # 写 fstab
+    └── patches/             # 补丁文件本体
 ```
+
+所有脚本都从环境变量取路径（`WORK` / `IMG` / `SRC`），没有任何硬编码路径，
+可以直接 `git clone` 下来在别人的机器上跑。
 
 ---
 

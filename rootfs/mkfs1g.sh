@@ -87,6 +87,6 @@ NEXT:
   debugfs -w -f sym_cmds.txt  newrootfs.img    # recreate ~3189 symlinks
   ./mkmeta.sh                                   # -> meta_cmds.txt
   debugfs -w -f meta_cmds.txt newrootfs.img    # ~71157 sif commands
-  debugfs -w -f fix-pam.txt   newrootfs.img    # MUST NOT SKIP
+  IMG=newrootfs.img ./apply-fixes.sh            # PAM/securetty/getty/netup
   e2fsck -fy newrootfs.img
 NEXT

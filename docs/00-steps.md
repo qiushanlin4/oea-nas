@@ -91,18 +91,23 @@
 
 | # | 步骤 | 脚本 | 产物 |
 |---|---|---|---|
-| 6.1 | 提取 rootfs 分区 | `dd if=armbian.img of=armroot.img bs=1M skip=528 count=2999` | `armroot.img` 3.1 GB |
+| 6.1 | 提取 rootfs 分区 | `WORK=~/oea rootfs/ddroot.sh` | `armroot.img` 3.1 GB |
 | 6.2 | 导出文件树 | `debugfs -R "rdump / rootfs_out" armroot.img` | `rootfs_out/` |
-| 6.3 | 裁剪 | `./rootfs/mk1g.sh` | 815 MB |
-| 6.4 | 记录符号链接 | `find rootfs_out -type l -printf '%p\t%l\n' > symlinks.tsv` | 3189 行 |
-| 6.5 | 建壳 | `./rootfs/mkfs1g.sh` | `newrootfs.img` 1 GiB |
-| 6.6 | 重建符号链接 | `debugfs -w -f sym_cmds.txt final.img` | 3189 个 link |
-| 6.7 | 恢复权限 | `debugfs -w -f meta_cmds.txt final.img` | 71157 条 sif |
-| 6.8 | **修 PAM** | `debugfs -w -f fix-pam.txt final.img` | 删掉 `pam_lastlog.so` |
-| 6.9 | 定制 fstab/getty | 见 [05-rootfs.md](05-rootfs.md) | — |
-| 6.10 | 验收 | `e2fsck -fy final.img` | 无错 |
+| 6.3 | 裁剪到 1 GiB 以内 | `WORK=~/oea rootfs/mk1g.sh` | 815 MB |
+| 6.4 | 建壳 + 记录符号链接 | `WORK=~/oea rootfs/mkfs1g.sh` | `newrootfs.img` 1 GiB + `sym_cmds.txt` |
+| 6.5 | 重建 3189 个符号链接 | `debugfs -w -f sym_cmds.txt newrootfs.img` | `/bin` `/lib` `/sbin` 回来了 |
+| 6.6 | 抓原始权限 | `WORK=~/oea rootfs/walkall.sh` → `WORK=~/oea rootfs/mkmeta.sh` | `meta_cmds.txt` 71157 行 |
+| 6.7 | 恢复权限 | `debugfs -w -f meta_cmds.txt newrootfs.img` | uid/gid/mode（含 sudo 的 04755） |
+| 6.8 | **打补丁** | `IMG=newrootfs.img rootfs/apply-fixes.sh` | PAM + securetty + serial getty + netup |
+| 6.9 | 写 fstab | `IMG=newrootfs.img rootfs/setfstab.sh` | 见 [09-storage.md](09-storage.md) |
+| 6.10 | 体检 | `e2fsck -fy newrootfs.img` | 0 errors |
 
-**6.8 是最关键的一步** —— 不删那行 `pam_lastlog.so`，系统能启动但永远登录不了。
+**6.5 和 6.8 是两个「不做就白干」的步骤**：
+
+- 6.5 少了，`/bin` `/lib` `/sbin` 不在，PAM 找不到模块
+- 6.8 少了，`pam_lastlog.so` 的引用还在，PAM 整栈 ABORT
+
+两个都是**系统能启动但永远登录不了**，而且日志里看不出原因。
 
 ---
 

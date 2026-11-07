@@ -13,6 +13,10 @@ rootfs_out/
 *.o
 *.exe
 
+# 生成物（体积大、可随时重算）
+sym_cmds.txt
+meta_cmds.txt
+
 # 日志与临时文件
 *.log
 wget-log
@@ -20,6 +24,8 @@ lsout.txt
 dirs.txt
 lsbatch.txt
 symlinks.tsv
+fstab.new
+login.fixed
 
 # 系统
 .DS_Store
