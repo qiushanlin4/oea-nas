@@ -133,7 +133,7 @@ Samba 有自己的密码库（`/var/lib/samba/private/passdb.tdb`），**必须*
 smbpasswd -a nas
 
 # 非交互（脚本里用）
-(echo 'nasnas1234'; echo 'nasnas1234') | smbpasswd -a -s nas
+(echo 'YOUR_SMB_PASSWORD'; echo 'YOUR_SMB_PASSWORD') | smbpasswd -a -s nas
 # Added user nas.
 
 smbpasswd -e nas          # 启用
@@ -166,7 +166,7 @@ smbclient -L //127.0.0.1 -N
 # session setup failed: NT_STATUS_ACCESS_DENIED
 
 # 带账号
-smbclient -L //127.0.0.1 -U nas%nasnas1234 -m SMB3
+smbclient -L //127.0.0.1 -U nas%YOUR_SMB_PASSWORD -m SMB3
 ```
 
 预期输出：
@@ -185,7 +185,7 @@ Reconnecting with SMB1 for workgroup listing.
 ```bash
 echo "hello" > /tmp/t.txt
 
-smbclient //127.0.0.1/nas -U nas%nasnas1234 -m SMB3 \
+smbclient //127.0.0.1/nas -U nas%YOUR_SMB_PASSWORD -m SMB3 \
     -c 'put /tmp/t.txt smbtest.txt; ls'
 ```
 
@@ -225,7 +225,7 @@ LISTEN 0 4096   [::]:139   [::]:* users:(("smbd",pid=...))
 ### 方法二：映射网络驱动器（持久化）
 
 ```cmd
-net use N: \\oeanas.local\nas /user:nas nasnas1234 /persistent:yes
+net use N: \\oeanas.local\nas /user:nas YOUR_SMB_PASSWORD /persistent:yes
 ```
 
 验证：
@@ -252,7 +252,7 @@ net use Y: /delete /y 2>$null
 
 # 建新映射
 New-SmbMapping -LocalPath "Z:" -RemotePath "\\oeanas.local\nas" `
-    -UserName "nas" -Password "nasnas1234" -ErrorAction Stop
+    -UserName "nas" -Password "YOUR_SMB_PASSWORD" -ErrorAction Stop
 
 Get-ChildItem Z:\
 ```
@@ -266,7 +266,7 @@ Get-ChildItem Z:\
 ### 现象
 
 ```cmd
-net use \\10.9.8.77\nas /user:nas nasnas1234
+net use \\10.9.8.77\nas /user:nas YOUR_SMB_PASSWORD
 System error 67 has occurred.
 The network name cannot be found.
 ```

@@ -414,7 +414,7 @@ ls -la /srv/pool
 **方案 A**（推荐）：用账号连接
 
 ```cmd
-net use N: \\oeanas.local\nas /user:nas nasnas1234 /persistent:yes
+net use N: \\oeanas.local\nas /user:nas YOUR_SMB_PASSWORD /persistent:yes
 ```
 
 **方案 B**：Windows 组策略允许来宾
