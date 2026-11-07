@@ -1,0 +1,33 @@
+# 大镜像文件（不要把二进制提交进仓库）
+*.img
+*.img.gz
+*.bin
+*.zip
+*.7z
+
+# 构建产物
+bin/
+obj/
+stage_out/
+rootfs_out/
+*.o
+*.exe
+
+# 日志与临时文件
+*.log
+wget-log
+lsout.txt
+dirs.txt
+lsbatch.txt
+symlinks.tsv
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~

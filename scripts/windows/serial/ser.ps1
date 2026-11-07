@@ -1,0 +1,30 @@
+param([string]$Port="COM5",[int]$Baud=1500000,[int]$Seconds=20,[string]$Cmd="")
+$sp = New-Object System.IO.Ports.SerialPort
+$sp.PortName=$Port; $sp.BaudRate=$Baud; $sp.DataBits=8
+$sp.Parity=[System.IO.Ports.Parity]::None; $sp.StopBits=[System.IO.Ports.StopBits]::One
+$sp.Handshake=[System.IO.Ports.Handshake]::None
+$sp.DtrEnable=$false; $sp.RtsEnable=$false
+try{ $sp.Open() }catch{ Write-Output ("OPENFAIL: " + $_.Exception.Message); exit 1 }
+Write-Output "OPEN-OK"
+$sb = New-Object System.Text.StringBuilder
+$sw=[Diagnostics.Stopwatch]::StartNew()
+$sent=$false
+while($sw.Elapsed.TotalSeconds -lt $Seconds){
+  if(-not $sent -and $Cmd -ne "" -and $sw.Elapsed.TotalSeconds -gt 1){
+    $sp.Write($Cmd + "`r")
+    $sent=$true
+    Write-Output ("SENT: " + $Cmd)
+  }
+  $n=$sp.BytesToRead
+  if($n -gt 0){
+    $b=New-Object byte[] $n
+    [void]$sp.Read($b,0,$n)
+    [void]$sb.Append([Text.Encoding]::ASCII.GetString($b))
+  }
+  Start-Sleep -Milliseconds 60
+}
+$sp.Close()
+$t = $sb.ToString()
+Write-Output ("LEN=" + $t.Length)
+Write-Output "----"
+Write-Output $t

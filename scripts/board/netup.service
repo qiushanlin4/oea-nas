@@ -1,0 +1,16 @@
+[Unit]
+Description=Bring up ethernet interfaces (DHCP with static fallback)
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=network.target network-online.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=60
+ExecStart=/usr/local/sbin/netup.sh
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=network-online.target
